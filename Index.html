@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>糖の環状化 3D：フィッシャー投影式 → ハース投影式</title>
+<style>
+:root{--bg:#f3f5f9;--bg2:#e3e9f4;--fg:#1c2230;--mut:#5b6577;--card:rgba(255,255,255,.82);--bd:#cfd6e3;--ac:#2563eb;--acfg:#fff;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#0e131d;--bg2:#1a2336;--fg:#e6ebf5;--mut:#98a3b8;--card:rgba(23,30,44,.85);--bd:#2b3448;--ac:#6ea0ff;--acfg:#0b1020}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#0e131d;--bg2:#1a2336;--fg:#e6ebf5;--mut:#98a3b8;--card:rgba(23,30,44,.85);--bd:#2b3448;--ac:#6ea0ff;--acfg:#0b1020}
+html{scroll-padding-top:env(safe-area-inset-top,0px);height:100%}
+body{margin:0;height:100%;display:flex;flex-direction:column;background:radial-gradient(ellipse at 50% 35%,var(--bg2),var(--bg) 70%);color:var(--fg);font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;overflow:hidden}
+#stage{position:relative;flex:1;min-height:0}
+canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+#cap{position:absolute;left:12px;top:10px;right:12px;pointer-events:none}
+#cap h1{margin:0;font-size:15px;color:var(--mut);font-weight:600}
+#t{font-size:19px;font-weight:700;margin-top:4px}
+#d{font-size:13px;color:var(--mut);margin-top:2px;max-width:34em;line-height:1.5}
+#nm{position:absolute;right:12px;bottom:8px;font-size:15px;font-weight:700;pointer-events:none}
+#leg{position:absolute;left:12px;bottom:8px;font-size:12px;color:var(--mut);pointer-events:none}
+#leg i{display:inline-block;width:10px;height:10px;border-radius:50%;margin:0 3px 0 8px;vertical-align:-1px;border:1px solid var(--bd)}
+#panel{background:var(--card);border-top:1px solid var(--bd);padding:10px 12px;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;backdrop-filter:blur(8px)}
+.seg{display:inline-flex;border:1px solid var(--bd);border-radius:9px;overflow:hidden}
+button{font:inherit;font-size:13px;color:var(--fg);background:transparent;border:0;padding:7px 11px;cursor:pointer}
+.seg button+button{border-left:1px solid var(--bd)}
+button.on{background:var(--ac);color:var(--acfg);font-weight:700}
+.btn{border:1px solid var(--bd);border-radius:9px}
+#sl{flex:1 1 220px;min-width:160px;accent-color:var(--ac)}
+label{font-size:13px;color:var(--mut);display:inline-flex;gap:4px;align-items:center}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="cv"></canvas>
+  <div id="cap"><h1>糖の環状化　フィッシャー投影式 → ハース投影式</h1><div id="t"></div><div id="d"></div></div>
+  <div id="leg"><i style="background:#6b7280"></i>C<i style="background:#e5484d"></i>O<i style="background:#d5dde8"></i>H ／ ドラッグで回転・ホイールでズーム</div>
+  <div id="nm"></div>
+</div>
+<div id="panel">
+  <div class="seg" id="sg"><button data-k="glc" class="on">D-グルコース</button><button data-k="man">D-マンノース</button><button data-k="gal">D-ガラクトース</button></div>
+  <div class="seg" id="an"><button data-k="a" class="on">α型</button><button data-k="b">β型</button></div>
+  <button class="btn" id="pl">⏸ 一時停止</button>
+  <button class="btn" id="rs">⟲ 最初から</button>
+  <input type="range" id="sl" min="0" max="1000" value="0" aria-label="進行度">
+  <label><input type="checkbox" id="lb" checked>C番号</label>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const V=(x,y,z)=>new THREE.Vector3(x,y,z);
+const ss=(a,b,x)=>{x=Math.min(1,Math.max(0,(x-a)/(b-a)));return x*x*(3-2*x)};
+// Fischer上の向き(+1:右 / -1:左) C2,C3,C4,C5
+const SUG={glc:{n:'グルコース',s:[1,-1,1,1],note:'グルコース：C2〜C4 の OH が 右・左・右。環では 下・上・下。'},
+ man:{n:'マンノース',s:[-1,-1,1,1],note:'マンノースはグルコースと C2 の OH の向きだけが逆（C2 エピマー）。'},
+ gal:{n:'ガラクトース',s:[1,-1,-1,1],note:'ガラクトースはグルコースと C4 の OH の向きだけが逆（C4 エピマー）。'}};
+let sugar='glc',anomer='a',p=0,playing=true,F=0,yaw0=0,pitch=0,zoom=1;
+const SPEED=1/15;
+
+const stage=document.getElementById('stage'),cv=document.getElementById('cv');
+const R=new THREE.WebGLRenderer({canvas:cv,antialias:true,alpha:true});
+R.setPixelRatio(Math.min(devicePixelRatio,2));
+const scene=new THREE.Scene(),cam=new THREE.PerspectiveCamera(40,1,.1,100);
+scene.add(new THREE.AmbientLight(0xffffff,.7));
+const dl=new THREE.DirectionalLight(0xffffff,.85);dl.position.set(5,8,10);scene.add(dl);
+const dl2=new THREE.DirectionalLight(0xffffff,.3);dl2.position.set(-6,-3,-8);scene.add(dl2);
+const root=new THREE.Group(),yawG=new THREE.Group(),layG=new THREE.Group(),grp=new THREE.Group();
+scene.add(root);root.add(yawG);yawG.add(layG);layG.add(grp);
+
+const col={C:0x6b7280,O:0xe5484d,H:0xd5dde8},rad={C:.4,O:.38,H:.23};
+const sph=new THREE.SphereGeometry(1,24,16),cyl=new THREE.CylinderGeometry(1,1,1,10);
+const A={};
+const mk=(k,el)=>{const m=new THREE.Mesh(sph,new THREE.MeshStandardMaterial({color:col[el],roughness:.35}));m.scale.setScalar(rad[el]);grp.add(m);A[k]=m};
+['C1','C2','C3','C4','C5','C6'].forEach(k=>mk(k,'C'));
+['O1','O2','O3','O4','O5','O6'].forEach(k=>mk(k,'O'));
+['H1','H2','H3','H4','H5','H6a','H6b','HO2','HO3','HO4','HO6','HX'].forEach(k=>mk(k,'H'));
+
+const bm=new THREE.MeshStandardMaterial({color:0x9aa3b2,roughness:.5}),B=[];
+const bond=(a,b,w,dbl)=>{const ms=[];for(let i=0;i<(dbl?2:1);i++){const m=new THREE.Mesh(cyl,bm);grp.add(m);ms.push(m)}B.push({a,b,w:w||(()=>1),dbl,ms})};
+[['C1','C2'],['C2','C3'],['C3','C4'],['C4','C5'],['C5','C6'],['C5','O5'],['C1','H1'],['C5','H5'],['C6','O6'],['C6','H6a'],['C6','H6b'],['O6','HO6']].forEach(x=>bond(...x));
+[2,3,4].forEach(n=>{bond('C'+n,'O'+n);bond('C'+n,'H'+n);bond('O'+n,'HO'+n)});
+bond('O5','C1',()=>F);bond('C1','O1',null,true);bond('O5','HX',()=>1-F);bond('O1','HX',()=>F);
+
+const sp=[];
+for(let i=1;i<=6;i++){const c=document.createElement('canvas');c.width=c.height=64;const g=c.getContext('2d');
+ g.font='bold 40px sans-serif';g.textAlign='center';g.textBaseline='middle';g.lineWidth=6;g.strokeStyle='rgba(0,0,0,.65)';
+ g.strokeText(i,32,34);g.fillStyle='#fff';g.fillText(i,32,34);
+ const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),depthTest:false,transparent:true}));
+ s.scale.setScalar(.85);s.renderOrder=9;grp.add(s);sp.push(s)}
+
+const Y=V(0,1,0);
+function drawBond(b){
+ const pa=A[b.a].position,pb=A[b.b].position,w=b.w(),d=pb.clone().sub(pa),L=d.length(),dn=d.clone().normalize();
+ let pr=dn.clone().cross(V(0,0,1));if(pr.length()<.1)pr=dn.clone().cross(V(1,0,0));pr.normalize();
+ b.ms.forEach((m,i)=>{m.visible=w>.03;if(!m.visible)return;
+  const r=(b.dbl?.06+.025*F:.085)*w,off=b.dbl?(i?1:-1)*.11*(1-F):0;
+  m.position.copy(pa).add(pb).multiplyScalar(.5).addScaledVector(pr,off);
+  m.quaternion.setFromUnitVectors(Y,dn);m.scale.set(r,L,r)})}
+
+function update(){
+ const c=ss(.08,.58,p),w=ss(.42,.76,p),f=ss(.72,.97,p),th=c*Math.PI/3;F=f;
+ const cfg=SUG[sugar].s,sA=anomer==='a'?1:-1;
+ const T=a=>V(0,-Math.cos(a),-Math.sin(a)),O=a=>V(0,-Math.sin(a),Math.cos(a));
+ const P=[V(0,0,0)];for(let k=0;k<5;k++)P.push(P[k].clone().addScaledVector(T(k*th),1.5));
+ const sub=(i,s)=>V(.8*s,0,0).addScaledVector(O((i-.5)*th),.6).normalize();
+ const put=(k,base,dir,len)=>A[k].position.copy(base).addScaledVector(dir,len);
+ for(let i=0;i<5;i++)A['C'+(i+1)].position.copy(P[i]);
+ // C1：カルボニル → 環のアノマー炭素
+ const dO=V(.5,.85,.3).lerp(sub(0,sA),f).normalize(),dH=V(-.6,.8,.3).lerp(sub(0,-sA),f).normalize();
+ put('O1',P[0],dO,1.3);put('H1',P[0],dH,1.0);
+ // C2〜C4
+ for(let i=1;i<4;i++){const s=cfg[i-1],n=i+1,d=sub(i,s);
+  put('O'+n,P[i],d,1.4);put('H'+n,P[i],sub(i,-s),1.0);
+  put('HO'+n,A['O'+n].position,d.clone().multiplyScalar(.5).addScaledVector(T((i-.5)*th),.85).normalize(),.95)}
+ // C5：C6 と O5 の入れ替わり（C4–C5 結合まわりの回転）
+ const s5=cfg[3],a4=3.5*th;
+ A.O5.position.copy(P[4]).addScaledVector(sub(4,s5),1.4).lerp(P[5],w);
+ const dC6=T(4*th).lerp(sub(4,-s5),w).normalize();
+ put('C6',P[4],dC6,1.5);
+ put('H5',P[4],sub(4,-s5).lerp(sub(4,s5),w).normalize(),1.0);
+ // C6 の置換基
+ const u=dC6,ref=O(a4),v1=ref.clone().addScaledVector(u,-ref.dot(u)).normalize(),v2=u.clone().cross(v1);let dO6;
+ [['O6',0],['H6a',2.094],['H6b',4.189]].forEach(([k,ph],j)=>{
+  const d=u.clone().multiplyScalar(.34).addScaledVector(v1,.94*Math.cos(ph)).addScaledVector(v2,.94*Math.sin(ph)).normalize();
+  put(k,A.C6.position,d,j?1.0:1.4);if(!j)dO6=d});
+ put('HO6',A.O6.position,dO6.clone().add(v2.clone().multiplyScalar(.9)).normalize(),.95);
+ // O5 の H が アノマー O へ移動
+ const d5=A.O5.position.clone().sub(P[4]).normalize();
+ const h5=A.O5.position.clone().addScaledVector(d5.multiplyScalar(.4).addScaledVector(O(a4),.9).normalize(),.95);
+ const h1=A.O1.position.clone().addScaledVector(dO.clone().multiplyScalar(.6).addScaledVector(V(0,-1,0),.8).normalize(),.95);
+ A.HX.position.copy(h5).lerp(h1,f).addScaledVector(O(0),Math.sin(Math.PI*f)*1.1);
+ B.forEach(drawBond);
+ const cen=V(0,0,0);P.forEach(q=>cen.add(q));cen.multiplyScalar(1/6);grp.position.copy(cen).negate();
+ sp.forEach((s,i)=>{s.position.copy(A['C'+(i+1)].position);s.visible=lb.checked});
+ // 視点：フィッシャー(正面) → 側面で折り畳みを観察 → 横倒しにして上から見たハース
+ const lay=ss(.35,.8,p);
+ yawG.rotation.y=-Math.PI/2*ss(.06,.3,p)+Math.PI*lay;
+ layG.rotation.z=-Math.PI/2*lay;
+ root.rotation.set(.55*lay+pitch,yaw0,0);
+ caption();
+}
+const $=id=>document.getElementById(id),lb=$('lb');
+function caption(){
+ let t,d;
+ if(p<.06){t='フィッシャー投影式（開環・鎖状）';d='縦線が炭素鎖、横線は紙面の手前向き。右側の OH は環で下向き、左側は上向きになります。'}
+ else if(p<.45){t='炭素鎖が折り畳まれていく';d='C1 のアルデヒド炭素に C5 の O が近づくよう、鎖が巻き込まれます。'}
+ else if(p<.72){t='C5 まわりが回転する';d='C5 の C6（CH₂OH）が上へ、O5 が C1 側へ向きを変え、六員環の形に整います。'}
+ else if(p<.97){t='環化（ヘミアセタール形成）';d='O5 が C1 を攻撃して結合し、O5 の H がカルボニル O へ移動して C1 に OH が生じます。'}
+ else{t='ハース投影式（ピラノース環）';d=(anomer==='a'?'α型：C1 の OH が C6 と反対側（下向き）。':'β型：C1 の OH が C6 と同じ側（上向き）。')+SUG[sugar].note}
+ $('t').textContent=t;$('d').textContent=d;
+ $('nm').textContent=p>.97?(anomer==='a'?'α':'β')+'-D-'+SUG[sugar].n+'ピラノース':'D-'+SUG[sugar].n+(p<.06?'（鎖状）':'');
+ $('sl').value=Math.round(p*1000);
+}
+function seg(id,fn){$(id).addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+ $(id).querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));fn(b.dataset.k);
+ p=Math.min(p,.55);playing=true;$('pl').textContent='⏸ 一時停止'})}
+seg('sg',k=>sugar=k);seg('an',k=>anomer=k);
+$('pl').onclick=()=>{if(p>=1)p=0;playing=!playing;$('pl').textContent=playing?'⏸ 一時停止':'▶ 再生'};
+$('rs').onclick=()=>{p=0;playing=true;$('pl').textContent='⏸ 一時停止'};
+$('sl').oninput=e=>{p=e.target.value/1000;playing=false;$('pl').textContent='▶ 再生'};
+lb.onchange=update;
+
+let drag=false,lx=0,ly=0;
+cv.addEventListener('pointerdown',e=>{drag=true;lx=e.clientX;ly=e.clientY;cv.setPointerCapture(e.pointerId);cv.style.cursor='grabbing'});
+cv.addEventListener('pointerup',()=>{drag=false;cv.style.cursor='grab'});
+cv.addEventListener('pointermove',e=>{if(!drag)return;yaw0+=(e.clientX-lx)*.01;pitch=Math.max(-1.3,Math.min(1.3,pitch+(e.clientY-ly)*.01));lx=e.clientX;ly=e.clientY});
+cv.addEventListener('wheel',e=>{e.preventDefault();zoom=Math.max(.5,Math.min(2.2,zoom*(e.deltaY>0?.92:1.08)))},{passive:false});
+function resize(){const w=stage.clientWidth,h=stage.clientHeight;R.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix()}
+new ResizeObserver(resize).observe(stage);resize();
+
+let last=performance.now();
+(function loop(now){
+ const dt=Math.min(.05,(now-last)/1000);last=now;
+ if(playing){p=Math.min(1,p+dt*SPEED);if(p>=1){playing=false;$('pl').textContent='▶ もう一度'}}
+ cam.position.set(0,0,(20/Math.min(1,cam.aspect*1.05))/zoom);
+ update();R.render(scene,cam);requestAnimationFrame(loop)})(last);
+</script>
+</body>
+</html>
